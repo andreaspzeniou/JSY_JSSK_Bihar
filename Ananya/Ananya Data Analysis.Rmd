@@ -1,0 +1,543 @@
+---
+title: "Ananya Data Analysis"
+author: "Andreas Petrou-Zeniou"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(haven)
+library(tidyverse)
+Sys.setenv(RGL_USE_NULL=TRUE)
+library(matlib)
+library(MASS)
+library(plyr)
+library(bayestestR)
+library(kdensity)
+library(sem)
+library(hdm)
+library(stargazer)
+library(faraway)
+library(np)
+```
+
+```{r}
+df <- read_dta("Midline_HH_stata12.dta")
+```
+
+```{r}
+# look only at midline data (for now)
+df_m <- df[df$midline == 1,]
+df_m <- df_m %>% distinct()
+
+```
+
+```{r}
+
+## remove na's from certain rows - I'll have to think more critically about this, but everything is being
+## done in a somewhat ad-hoc way for now. I'm working on a cleaner version of this in my personal repo
+## so that will be added here when more progress is made
+
+df_m$t1_f19 <- df_m %>% dplyr::select(t1_f19) %>% replace(is.na(.),0)
+df_m$t1_e25_1 <- df_m %>% dplyr::select(t1_e25_1) %>% replace(is.na(.),0)
+df_m$t1_e25_2 <- df_m %>% dplyr::select(t1_e25_1) %>% replace(is.na(.),0)
+df_m$t1_k08a_jsy <- df_m %>% dplyr::select(t1_k08a_jsy) %>% replace(is.na(.),0)
+
+# f19 is the treatment - JSY / JSSK program, and we're regressing on awareness dymmies
+# this is a validity test - I run a range of these as you can see
+
+linear_model <- lm(unlist(t1_f19) ~ unlist(t1_e25_1) + unlist(t1_e25_2) + unlist(t1_e25_1) * unlist(t1_e25_2), data=df_m)
+print(summary(linear_model))
+
+linear_model <- lm(unlist(t1_f19) ~ unlist(t1_k08a_jsy), data=df_m)
+print(summary(linear_model))
+```
+
+Results of validity / weak instruments tests
+
+```{r}
+summary(df_m %>% dplyr::select(c(t1_f19, t1_k08a_jsy, t1_k08b_jsy,t1_e25_1)))
+```
+
+```{r}
+summary(df_m %>% dplyr::select(c(t1_l04, t1_l04a)))
+```
+
+```{r}
+
+# media access dummies
+
+df_m$has_tv <- df_m$t1_b19i + df_m$t1_b19j
+df_m$has_phone <- df_m$t1_b19l + df_m$t1_b19m
+
+# because of the sum, we have to floor to 1
+
+df_m$has_tv[df_m$has_tv >= 1] <- 1
+df_m$has_tv[df_m$has_phone >= 1] <- 1
+```
+
+```{r}
+print(sum(df_m$t1_f19 - df_m$hh_receive_jsy, na.rm = T))
+print(sum(df_m$t1_f19, na.rm = T))
+print(mean(df_m$t1_hh_jsy_pay, na.rm = T))
+```
+
+```{r}
+
+# df_tsls stores all the variables we need - for now
+
+df_tsls <- df_m %>% dplyr::select(c(t1_a_age_trgt_fml,hh_literate, t1_b19h, has_tv,
+                        has_phone, t1_b28, t1_hh_wealthindex,t1_f19,
+                        d_alive_fcl_chld,t1_e25_1,t1_e25_2,t1_f08,rural,t1_e03_asha,t1_b28, hh_wealthindex_qurt1,    hh_wealthindex_qurt2, hh_wealthindex_qurt3,hh_wealthindex_qurt4, hh_wealthindex_qurt, vl10))
+
+df_tsls <- as.data.frame(lapply(df_tsls,unlist))
+df_tsls <- lapply(df_tsls, as.numeric)
+df_tsls <- as.data.frame(lapply(df_tsls,unlist))
+
+```
+
+```{r}
+
+# one outcome we might want to test
+
+df_tsls$d_alive_fcl_chld <- 1 - df_tsls$d_alive_fcl_chld 
+
+# dummy - was a given woman aware of either the JSSK or JSY programs?
+
+df_tsls$jssk_jsy_aware <- df_tsls$t1_e25_2
+df_tsls$jssk_jsy_aware[df_tsls$jssk_jsy_aware < 1] <- 0
+df_tsls$jssk_jsy_aware[df_tsls$jssk_jsy_aware > 2] <- 0
+df_tsls$jssk_jsy_aware[df_tsls$jssk_jsy_aware == 2] <- 1
+
+# t1_f08 is categorical
+# inst_delivery == 0 iff t1_f08 == 1
+# inst_delivery == 1 whenever a woman gave birth in a facility
+
+df_tsls$inst_delivery <- df_tsls$t1_f08
+df_tsls$inst_delivery[df_tsls$inst_delivery < 2] <- 0
+df_tsls$inst_delivery[df_tsls$inst_delivery == 88] <- NA
+df_tsls$inst_delivery[df_tsls$inst_delivery > 1] <- 1
+
+
+
+```
+
+```{r}
+print(summary(df_tsls))
+```
+
+
+
+## Validity tests (also use Mikusheva and Sun)
+
+```{r}
+print(summary(lm(t1_f19 ~ jssk_jsy_aware+hh_literate+ has_tv+ has_phone+t1_hh_wealthindex+rural+t1_e03_asha+t1_b28, data=df_tsls)))
+```
+
+```{r}
+val_1 <- lm(t1_f19 ~ jssk_jsy_aware+hh_literate+ has_tv+ has_phone+t1_hh_wealthindex+rural+t1_e03_asha+t1_b28, data=df_tsls)
+val_2 <-  lm(t1_f19 ~ jssk_jsy_aware+t1_hh_wealthindex+rural+t1_e03_asha+t1_b28, data=df_tsls)
+
+# stargazer(val_1, val_2, title="Relevance Test Results", align=TRUE)
+```
+
+```{r}
+print(summary(val_1))
+print(summary(val_2))
+```
+
+## TSLS and OGMM results
+
+
+
+
+```{r}
+print(summary(lm(jssk_jsy_aware ~  hh_literate+ has_tv+ has_phone+t1_hh_wealthindex+rural+t1_e03_asha+t1_b28, data=df_tsls)))
+```
+
+
+```{r}
+df_tsls <- na.omit(df_tsls)
+```
+
+```{r}
+source("TSLS_OGMM.R")
+source("mikusheva_and_sun.R")
+source("abadie_kappa.R")
+```
+
+```{r}
+
+Z <- df_tsls %>% dplyr::select(c(jssk_jsy_aware,hh_literate,has_tv,has_phone,t1_hh_wealthindex,rural,t1_e03_asha,t1_b28))
+X <- df_tsls %>% dplyr::select(t1_f19)
+Y <- df_tsls %>% dplyr::select(inst_delivery)
+X_full <- df_tsls %>% dplyr::select(c(t1_f19,hh_literate,has_tv,has_phone,t1_hh_wealthindex,rural,t1_e03_asha,t1_b28))
+
+sample <- replicate(1000, sample(x = (1:nrow(Z)),size = 1,replace = F))
+
+X_full_tsls <- X_full
+Z_tsls <- Z
+
+X_full_tsls$I <- rep(1,nrow(X_full_tsls))
+Z_tsls$I <- rep(1,nrow(Z_tsls))
+
+tsls_results <- TSLS(as.matrix(X_full_tsls),as.matrix(Y),as.matrix(Z_tsls))
+rownames(tsls_results[[1]]) <- colnames(X_full_tsls)
+print(tsls_results[[1]])
+print(tsls_results[[4]])
+
+for (i in (1:length(colnames(X_full_tsls)))) {
+  print("")
+  print(colnames(X_full_tsls)[i])
+  hypothesis_tests(as.matrix(X_full_tsls), as.matrix(Y), as.matrix(Z_tsls), test_idx=i)
+}
+
+F  <- mikusheva_and_sun_F(as.matrix(X)[sample,],as.matrix(Z)[sample,])
+W <- mikusheva_and_sun_W(as.matrix(X)[sample,],as.matrix(Y)[sample,],as.matrix(Z)[sample,],0.101)
+print(F)
+print(W)
+
+```
+
+```{r}
+
+Z <- df_tsls %>% dplyr::select(c(jssk_jsy_aware,hh_literate,t1_hh_wealthindex,rural,t1_e03_asha,t1_b28))
+X <- df_tsls %>% dplyr::select(t1_f19)
+Y <- df_tsls %>% dplyr::select(inst_delivery)
+X_full <- df_tsls %>% dplyr::select(c(t1_f19,hh_literate,,t1_hh_wealthindex,rural,t1_e03_asha,t1_b28))
+
+sample <- replicate(1000, sample(x = (1:nrow(Z)),size = 1,replace = F))
+
+X_full_tsls <- X_full
+Z_tsls <- Z
+
+X_full_tsls$I <- rep(1,nrow(X_full_tsls))
+Z_tsls$I <- rep(1,nrow(Z_tsls))
+
+tsls_results <- TSLS(as.matrix(X_full_tsls),as.matrix(Y),as.matrix(Z_tsls))
+rownames(tsls_results[[1]]) <- colnames(X_full_tsls)
+print(tsls_results[[1]])
+print(tsls_results[[4]])
+
+for (i in (1:length(colnames(X_full_tsls)))) {
+  print("")
+  print(colnames(X_full_tsls)[i])
+  hypothesis_tests(as.matrix(X_full_tsls), as.matrix(Y), as.matrix(Z_tsls), test_idx=i)
+}
+
+F  <- mikusheva_and_sun_F(as.matrix(X)[sample,],as.matrix(Z)[sample,])
+W <- mikusheva_and_sun_W(as.matrix(X)[sample,],as.matrix(Y)[sample,],as.matrix(Z)[sample,],0.102)
+print(F)
+print(W)
+
+```
+
+```{r}
+
+Z <- df_tsls %>% dplyr::select(c(jssk_jsy_aware,t1_hh_wealthindex,rural,t1_e03_asha,t1_b28, hh_wealthindex_qurt1,hh_wealthindex_qurt2,hh_wealthindex_qurt3))
+X <- df_tsls %>% dplyr::select(t1_f19)
+Y <- df_tsls %>% dplyr::select(inst_delivery)
+X_full <- df_tsls %>% dplyr::select(c(t1_f19,hh_literate,,,rural,t1_e03_asha,t1_b28,hh_wealthindex_qurt1,hh_wealthindex_qurt2,hh_wealthindex_qurt3))
+
+sample <- replicate(1000, sample(x = (1:nrow(Z)),size = 1,replace = F))
+
+X_full_tsls <- X_full
+Z_tsls <- Z
+
+X_full_tsls$I <- rep(1,nrow(X_full_tsls))
+Z_tsls$I <- rep(1,nrow(Z_tsls))
+
+tsls_results <- TSLS(as.matrix(X_full_tsls),as.matrix(Y),as.matrix(Z_tsls))
+rownames(tsls_results[[1]]) <- colnames(X_full_tsls)
+print(tsls_results[[1]])
+print(tsls_results[[4]])
+
+for (i in (1:length(colnames(X_full_tsls)))) {
+  print("")
+  print(colnames(X_full_tsls)[i])
+  hypothesis_tests(as.matrix(X_full_tsls), as.matrix(Y), as.matrix(Z_tsls), test_idx=i)
+}
+
+F  <- mikusheva_and_sun_F(as.matrix(X)[sample,],as.matrix(Z)[sample,])
+W <- mikusheva_and_sun_W(as.matrix(X)[sample,],as.matrix(Y)[sample,],as.matrix(Z)[sample,],0.129)
+print(F)
+print(W)
+
+```
+
+```{r}
+
+a <- df_tsls %>% dplyr::select(c(hh_literate,rural,t1_e03_asha,t1_b28,hh_wealthindex_qurt1,hh_wealthindex_qurt2,hh_wealthindex_qurt3,hh_wealthindex_qurt4))
+a <- as.matrix(a)
+h <- c()
+for (row in (1:nrow(a))) {
+  h[row] <- paste(a[row,],collapse='')
+}
+
+X_s <- data.frame(matrix(0,ncol=length(unique(as.vector(h))),nrow=length(as.vector(h))))
+colnames(X_s) <- unique(h)
+
+for (obs in (1:length(h))) {
+  col <- h[obs]
+  X_s[obs,col] <- 1
+}
+
+Z <- X_s
+Z$jssk_jsy_aware <- df_tsls %>% dplyr::select(jssk_jsy_aware)
+
+X <- df_tsls %>% dplyr::select(t1_f19)
+Y <- df_tsls %>% dplyr::select(inst_delivery)
+X_full <- X_s
+X_full$t1_f19 <- df_tsls %>% dplyr::select(t1_f19)
+
+sample <- replicate(1000, sample(x = (1:nrow(Z)),size = 1,replace = F))
+
+X_full_tsls <- X_full
+Z_tsls <- Z
+
+X_full_tsls$I <- rep(1,nrow(X_full_tsls))
+Z_tsls$I <- rep(1,nrow(Z_tsls))
+
+tsls_results <- TSLS(as.matrix(X_full_tsls),as.matrix(Y),as.matrix(Z_tsls))
+rownames(tsls_results[[1]]) <- colnames(X_full_tsls)
+print(tsls_results[[1]])
+print(tsls_results[[4]])
+
+for (i in (1:length(colnames(X_full_tsls)))) {
+  print("")
+  print(colnames(X_full_tsls)[i])
+  hypothesis_tests(as.matrix(X_full_tsls), as.matrix(Y), as.matrix(Z_tsls), test_idx=i)
+}
+
+F  <- mikusheva_and_sun_F(as.matrix(X)[sample,],as.matrix(Z)[sample,])
+W <- mikusheva_and_sun_W(as.matrix(X)[sample,],as.matrix(Y)[sample,],as.matrix(Z)[sample,],0.129)
+print(F)
+print(W)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+ols_model_1 <- lm(inst_delivery ~ t1_f19+hh_literate+has_tv+has_phone+t1_hh_wealthindex+rural+t1_e03_asha+t1_b28,data=df_tsls)
+summary(ols_model_1)
+```
+
+```{r}
+ols_model_2 <- lm(inst_delivery ~ t1_f19+hh_literate+t1_hh_wealthindex+rural+t1_e03_asha+t1_b28,data=df_tsls)
+summary(ols_model_2)
+```
+```{r}
+a <- df_tsls %>% dplyr::select(c(hh_literate,rural,t1_e03_asha,t1_b28,hh_wealthindex_qurt1,hh_wealthindex_qurt2,hh_wealthindex_qurt3,hh_wealthindex_qurt4))
+a <- as.matrix(a)
+h <- c()
+for (row in (1:nrow(a))) {
+  h[row] <- paste(a[row,],collapse='')
+}
+h <- as.factor(as.vector(h))
+
+ols_model_4 <- lm(df_tsls$inst_delivery ~ df_tsls$t1_f19 + h,intercept=FALSE)
+print(summary(ols_model_4))
+```
+
+```{r}
+ols_model_3 <- lm(inst_delivery ~ t1_f19+hh_literate+rural+t1_e03_asha+t1_b28+hh_wealthindex_qurt1+hh_wealthindex_qurt2+hh_wealthindex_qurt3,data=df_tsls)
+summary(ols_model_3)
+```
+
+```{r}
+stargazer(ols_model_1,ols_model_2,ols_model_3, title="OLS Model results",align=TRUE)
+```
+
+```{r}
+
+tsls_1 <- hdm::tsls(x=as.matrix(df_tsls %>% dplyr::select(c(hh_literate, has_phone,t1_hh_wealthindex,rural,t1_e03_asha,t1_b28))),
+                    d=as.matrix(df_tsls %>% dplyr::select(t1_f19)),
+                    y=as.matrix(df_tsls %>% dplyr::select(inst_delivery)),
+                    z=as.matrix(df_tsls %>% dplyr::select(jssk_jsy_aware)),
+                    intercept=TRUE,
+                    formula=y ~ x + d | x + z)
+
+```
+
+```{r}
+summary(tsls_1)
+```
+
+
+```{r}
+
+tsls_2 <- hdm::tsls(x=as.matrix(df_tsls %>% dplyr::select(c(hh_literate, has_phone, hh_wealthindex_qurt1, hh_wealthindex_qurt2, hh_wealthindex_qurt3, rural,t1_e03_asha,t1_b28))),
+                    d=as.matrix(df_tsls %>% dplyr::select(t1_f19)),
+                    y=as.matrix(df_tsls %>% dplyr::select(inst_delivery)),
+                    z=as.matrix(df_tsls %>% dplyr::select(c(jssk_jsy_aware))),
+                    intercept=TRUE,
+                    formula=y ~ x + d | x + z)
+
+```
+
+```{r}
+print(summary(tsls_1))
+print(summary(tsls_2))
+```
+
+```{r}
+print(summary(lm(jssk_jsy_aware ~ hh_literate+ has_tv+ has_phone+t1_hh_wealthindex+rural+t1_e03_asha+t1_b28, data=df_tsls)))
+```
+
+```{r}
+stargazer(tsls_1, title="TSLS Results", align=TRUE)
+```
+
+```{r}
+print(summary(tsls_1))
+```
+
+```{r}
+
+tsls_3 <- hdm::tsls(x=as.matrix(df_tsls %>% dplyr::select(c(hh_literate, has_phone,t1_hh_wealthindex,rural,t1_e03_asha,t1_b28))),
+                    d=as.matrix(df_tsls %>% dplyr::select(t1_f19)),
+                    y=as.matrix(df_tsls %>% dplyr::select(inst_delivery) %>% mutate(inst_delivery = ilogit(inst_delivery))),
+                    z=as.matrix(df_tsls %>% dplyr::select(c(jssk_jsy_aware)) %>% mutate(jssk_jsy_aware = ilogit(jssk_jsy_aware))),
+                    intercept=TRUE,
+                    formula=y ~ x + d | x + z)
+
+```
+
+```{r}
+print(summary(tsls_3))
+```
+
+```{r}
+
+a <- df_tsls %>% dplyr::select(c(hh_literate,rural,t1_e03_asha,t1_b28,hh_wealthindex_qurt1,hh_wealthindex_qurt2,hh_wealthindex_qurt3,hh_wealthindex_qurt4))
+a <- as.matrix(a)
+h <- c()
+for (row in (1:nrow(a))) {
+  h[row] <- paste(a[row,],collapse='')
+}
+
+X_s <- data.frame(matrix(0,ncol=length(unique(as.vector(h))),nrow=length(as.vector(h))))
+colnames(X_s) <- unique(h)
+
+for (obs in (1:length(h))) {
+  col <- h[obs]
+  X_s[obs,col] <- 1
+}
+
+tsls_4 <- hdm::tsls(x=X_s,
+                    d=as.matrix(df_tsls %>% dplyr::select(t1_f19)),
+                    y=as.matrix(df_tsls %>% dplyr::select(inst_delivery)),
+                    z=as.matrix(df_tsls %>% dplyr::select(c(jssk_jsy_aware))),
+                    intercept=FALSE,
+                    formula=y ~ x + d | x + z)
+
+print(summary(tsls_4))
+```
+
+```{r}
+
+source("abadie_kappa.R")
+
+```
+
+```{r}
+df_tsls$intercept <- rep(1,nrow(df_tsls))
+```
+
+```{r}
+
+X <- as.matrix(df_tsls %>% dplyr::select(c(intercept,t1_f19,hh_literate, has_phone,t1_hh_wealthindex,rural,t1_e03_asha,t1_b28)))
+D <- as.matrix(df_tsls %>% dplyr::select(t1_f19))
+Y <- as.matrix(df_tsls %>% dplyr::select(inst_delivery))
+Z <- as.matrix(df_tsls %>% dplyr::select(c(jssk_jsy_aware)))
+W <- as.matrix(df_tsls %>% dplyr::select(c(intercept,hh_literate, has_phone,t1_hh_wealthindex,rural,t1_e03_asha,t1_b28)))
+
+abadie_kappa(D=D,X=X,Y=Y,Z=Z,W=W)
+```
+
+```{r}
+
+X <- as.matrix(df_tsls %>% dplyr::select(c(intercept,t1_f19,hh_literate, has_phone,hh_wealthindex_qurt1, hh_wealthindex_qurt2, hh_wealthindex_qurt3,rural,t1_e03_asha,t1_b28)))
+D <- as.matrix(df_tsls %>% dplyr::select(t1_f19))
+Y <- as.matrix(df_tsls %>% dplyr::select(inst_delivery))
+Z <- as.matrix(df_tsls %>% dplyr::select(c(intercept,hh_literate, has_phone,hh_wealthindex_qurt1, hh_wealthindex_qurt2, hh_wealthindex_qurt3,rural,t1_e03_asha,t1_b28,jssk_jsy_aware)))
+W <- as.matrix(df_tsls %>% dplyr::select(c(intercept,hh_literate, has_phone,hh_wealthindex_qurt1, hh_wealthindex_qurt2, hh_wealthindex_qurt3,rural,t1_e03_asha,t1_b28)))
+
+abadie_kappa(unlist(D),X,unlist(Y),unlist(Z),unlist(W))
+
+```
+
+```{r}
+
+b_tsls <- ginv(t(X) %*% Z %*% ginv(t(Z) %*% Z) %*% t(Z) %*% X) %*% t(X) %*% Z %*% ginv(t(Z) %*% Z) %*% t(Z) %*% Y
+b_tsls 
+
+```
+
+```{r}
+X_n <- X_s
+X_n$D <- D
+
+abadie_kappa(unlist(D),as.matrix(X_n),unlist(Y),unlist(Z),unlist(X_s))
+```
+
+```{r}
+print(summary(tsls_1))
+print(summary(tsls_2))
+print(summary(tsls_3))
+```
+
+### Mikusheva and Sun Pre-Test
+
+
+```{r}
+
+Z <- as.matrix(df_tsls %>% dplyr::select(c(jssk_jsy_aware,hh_literate,has_tv,has_phone,t1_hh_wealthindex,rural,t1_e03_asha,t1_b28)))
+X <- as.matrix(df_tsls %>% dplyr::select(t1_f19))
+Y <- as.matrix(df_tsls %>% dplyr::select(inst_delivery))
+
+sample <- replicate(1000, sample(x = (1:nrow(Z)),size = 1,replace = F))
+
+F  <- mikusheva_and_sun_F(X[sample,],Z[sample,])
+W <- mikusheva_and_sun_W(X[sample,],Y[sample,],Z[sample,],0.101)
+print(F)
+print(W)
+
+Z <- as.matrix(df_tsls %>% dplyr::select(c(jssk_jsy_aware,hh_literate,t1_hh_wealthindex,rural,t1_e03_asha,t1_b28)))
+X <- as.matrix(df_tsls %>% dplyr::select(t1_f19))
+Y <- as.matrix(df_tsls %>% dplyr::select(inst_delivery))
+
+F <- mikusheva_and_sun_F(X[sample,],Z[sample,])
+W <- mikusheva_and_sun_W(X[sample,],Y[sample,],Z[sample,],0.101)
+print(F)
+print(W)
+
+```
+
